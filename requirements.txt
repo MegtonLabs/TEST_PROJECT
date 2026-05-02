@@ -1,0 +1,30 @@
+# ── Core deep-learning stack ──────────────────────────────────────────────────
+torch>=2.1.0
+torchvision>=0.16.0
+
+# ── HuggingFace ───────────────────────────────────────────────────────────────
+# Gemma 4 / AutoModelForMultimodalLM requires transformers built from GitHub main
+# until an official PyPI release ships the gemma4 architecture.
+# After the architecture lands in a stable release, you can pin to a specific version.
+transformers @ git+https://github.com/huggingface/transformers.git
+huggingface_hub>=0.22.0
+safetensors>=0.4.0
+
+# ── Falcon Perception (Gemma4-Visual-Agent dependency) ───────────────────────
+# Install after the core deps:
+#   pip install "falcon-perception[torch] @ git+https://github.com/tiiuae/falcon-perception.git"
+# This is left as a comment because it is a direct-URL dependency and cannot
+# be declared cleanly in requirements.txt without making the file inflexible.
+
+# ── Image processing ──────────────────────────────────────────────────────────
+Pillow>=10.0.0
+numpy>=1.24.0
+pycocotools>=2.0.7          # Required by Gemma4-Visual-Agent / Falcon Perception
+
+# ── Gradio / FastAPI (needed only if you run the Visual Agent UI) ─────────────
+gradio>=4.0.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+requests>=2.31.0
