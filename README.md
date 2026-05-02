@@ -1,265 +1,163 @@
-# Cheque Signature Verification System
+# Gemma Vision Agent — NVIDIA DGX Spark GB10 (CUDA / PyTorch)
 
-A modular, production-ready pipeline that combines two state-of-the-art AI
-components to verify handwritten signatures on bank cheques:
+This folder is a **parallel deployment** of the same agentic pipeline as the repository root (Falcon Perception + Gemma 4), built for **Linux on ARM64 with an NVIDIA Blackwell-class GPU** (DGX Spark GB10 class systems). The original MLX + macOS entry points in the repo root are **unchanged**.
 
-| Component | Role |
-|---|---|
-| [Gemma4-Visual-Agent](https://github.com/PromtEngineer/Gemma4-Visual-Agent/tree/dgx-spark-gb10) (Gemma 4 E4B + Falcon Perception) | Stage 1 — Cheque field extraction & signature localisation |
-| [siddharth-magesh/siamese-signature-verification](https://huggingface.co/siddharth-magesh/siamese-signature-verification) | Stage 2 — Biometric signature comparison |
+## What matches the original system
 
----
+- Same planning rules, tools (`DETECT`, `VLM`, `CROP`, `COMPARE`, `DETECT_EACH`, re-planning), and UI flow as `vision_studio.py` / `agent_studio.py` at the repo root.
+- Falcon Perception uses the upstream **PyTorch** backend (`falcon-perception[torch]`).
+- Gemma uses **`google/gemma-4-E4B-it`** via **Transformers** (`AutoModelForMultimodalLM`), equivalent role to the MLX `mlx-community/gemma-4-e4b-it-8bit` build.
 
-## Architecture
+## Prerequisites
 
-```
-                  ┌─────────────────────────────────────────┐
-  cheque.jpg ──▶  │  Stage 1: ChequeAnalyzer                │
-                  │  ┌─────────────────────────────────────┐ │
-                  │  │  Gemma 4 E4B (VLM)                  │ │
-                  │  │  • Is this a cheque?                 │ │
-                  │  │  • Extract: bank, date, payee,       │ │
-                  │  │    amount (figures + words), MICR    │ │
-                  │  │  • Return signature bounding box     │ │
-                  │  └──────────────────┬──────────────────┘ │
-                  │                     │ JSON output         │
-                  │  ┌──────────────────▼──────────────────┐ │
-                  │  │  Falcon Perception (fallback)        │ │
-                  │  │  • Detects "handwritten signature"   │ │
-                  │  │    if VLM bbox is missing            │ │
-                  │  └──────────────────┬──────────────────┘ │
-                  └─────────────────────┼───────────────────┘
-                                        │ BoundingBox
-                  ┌─────────────────────▼───────────────────┐
-                  │  crop + validate signature region        │
-                  │  (variance check, ink-ratio, erosion)    │
-                  └─────────────────────┬───────────────────┘
-                                        │ cropped PIL Image
-                  ┌─────────────────────▼───────────────────┐
-  ref_sigs[] ──▶  │  Stage 2: SignatureVerifier             │
-                  │  ┌─────────────────────────────────────┐ │
-                  │  │  Siamese CNN                        │ │
-                  │  │  • Embed query + references         │ │
-                  │  │  • Cosine similarity                │ │
-                  │  │  • Threshold → genuine / forged     │ │
-                  │  └─────────────────────────────────────┘ │
-                  └─────────────────────────────────────────┘
-                                        │
-                              VerificationResult
-```
-
----
-
-## Repository layout
-
-```
-.
-├── config.py                   # All tuneable settings (model IDs, thresholds, …)
-├── pipeline.py                 # End-to-end orchestration + CLI entry point
-├── requirements.txt
-│
-├── stages/
-│   ├── cheque_analyzer.py      # Stage 1 — Visual Agent wrapper
-│   └── signature_verifier.py  # Stage 2 — Siamese verifier
-│
-└── utils/
-    ├── image_utils.py          # Cropping, preprocessing, validation
-    └── result_types.py         # ChequeData, VerificationResult, …
-```
-
----
+- Python 3.10+ (3.12 recommended).
+- NVIDIA driver and CUDA-compatible PyTorch wheels for your stack.
+- Hugging Face account: accept the Gemma license for `google/gemma-4-E4B-it`, then `huggingface-cli login` (or set `HF_TOKEN`).
 
 ## Setup
 
-### 1. System requirements
-
-- Python 3.10+
-- NVIDIA GPU with CUDA (Gemma 4 E4B requires ~8 GB VRAM; 16 GB recommended)
-- HuggingFace account — accept the [Gemma licence](https://huggingface.co/google/gemma-4-E4B-it) and run `huggingface-cli login`
-
-### 2. Clone the Visual Agent
-
-The Visual Agent code is used **exactly as-is** — no modifications.
-
 ```bash
-git clone https://github.com/PromtEngineer/Gemma4-Visual-Agent.git
-export VISUAL_AGENT_REPO_PATH=/path/to/Gemma4-Visual-Agent/dgx_spark_gb10
-```
+cd /path/to/Gemma4-Visual-Agent
 
-### 3. Install dependencies
+python3.12 -m venv .venv-dgx
+source .venv-dgx/bin/activate
 
-```bash
-# PyTorch (adjust the CUDA version tag to match your driver)
+# Install PyTorch for your CUDA build (example: cu128 — adjust to your cluster image)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
-# Core dependencies
-pip install -r requirements.txt
-
-# Falcon Perception (Visual Agent dependency)
+pip install -r dgx_spark_gb10/requirements.txt
 pip install "falcon-perception[torch] @ git+https://github.com/tiiuae/falcon-perception.git"
 ```
 
-### 4. (Optional) Verify the Visual Agent
+**Gemma 4 and `transformers`:** `google/gemma-4-E4B-it` uses the `gemma4` architecture. Many PyPI releases (e.g. 4.57.x) do not yet expose `AutoModelForMultimodalLM` / Gemma4. The bundled `requirements.txt` installs **transformers from GitHub main** for that support. If you see `ImportError: AutoModelForMultimodalLM`, run:
 
 ```bash
-cd $VISUAL_AGENT_REPO_PATH
-python3 -m py_compile agent_studio.py
+pip install -U "git+https://github.com/huggingface/transformers.git"
 ```
 
----
-
-## Quick start
-
-### Python API
-
-```python
-from pipeline import ChequeVerificationPipeline
-from utils.image_utils import load_image
-
-pipeline = ChequeVerificationPipeline()
-
-result = pipeline.run(
-    cheque_image=load_image("cheque.jpg"),
-    reference_images=[
-        load_image("reference_sig_1.png"),
-        load_image("reference_sig_2.png"),
-    ],
-)
-
-import json
-print(json.dumps(result.to_dict(), indent=2))
-```
-
-**Example output**
-
-```json
-{
-  "cheque_data": {
-    "is_cheque": true,
-    "bank_name": "State Bank of India",
-    "date": "01/05/2026",
-    "payee_name": "John Doe",
-    "amount_numeric": "25,000.00",
-    "amount_words": "Twenty Five Thousand Only",
-    "micr_line": "000123456789 001234 56789012",
-    "account_number": "1234567890",
-    "cheque_number": "000456",
-    "signature_region": {
-      "bbox": {"x1": 540, "y1": 380, "x2": 780, "y2": 460},
-      "confidence": 1.0,
-      "validation_passed": true,
-      "validation_note": "Signature region validation passed."
-    }
-  },
-  "reference_scores": [0.923456, 0.918234],
-  "similarity_score": 0.920845,
-  "verdict": "genuine",
-  "confidence": 0.472532,
-  "reason": "Aggregated similarity 0.9208 >= threshold 0.85 (mean of 2 reference(s)).",
-  "error": null
-}
-```
-
-### Command-line interface
+## Run the main app
 
 ```bash
-python pipeline.py cheque.jpg ref1.png ref2.png
-# With a custom threshold:
-python pipeline.py cheque.jpg ref1.png --threshold 0.80
-# Enable VLM signature-region validation:
-python pipeline.py cheque.jpg ref1.png --vlm-validate
+cd dgx_spark_gb10
+python vision_studio.py
 ```
 
----
+Open **http://localhost:7860**. Example images are read from **`../test_data`** (repository root).
 
-## Configuration
+## All entry points (mirrors repo root)
 
-All settings live in `config.py`.  Override them via environment variables or
-by editing the dataclass defaults:
+| Script | Port | Description |
+|--------|------|-------------|
+| `python vision_studio.py` | 7860 | FastAPI + SSE premium UI (Agent + Compare). |
+| `python agent_studio.py` | 7860 | Gradio step-by-step agent. |
+| `python agent.py` | 7861 | Gradio planning agent (DETECT / VLM / etc.). |
+| `python app.py` | 7860 | Gradio image pipeline (Detect, Count, Q&A, Scene). |
+| `python demo.py` | 7860 | Gradio unified Image + Video tabs. |
+| `python video_tracker.py` | 7861 | Gradio video tracking only. |
+| `python main.py` | 7860 | Combined Gradio: image tabs + video tracking. |
 
-| Environment variable | Default | Description |
-|---|---|---|
-| `VISUAL_AGENT_REPO_PATH` | `./Gemma4-Visual-Agent/dgx_spark_gb10` | Path to the cloned Visual Agent |
-| `GEMMA_HF_MODEL_ID` | `google/gemma-4-E4B-it` | HuggingFace model ID for Gemma |
-| `FALCON_HF_MODEL_ID` | `tiiuae/Falcon-Perception` | HuggingFace model ID for Falcon |
-| `SIAMESE_MODEL_ID` | `siddharth-magesh/siamese-signature-verification` | Siamese model |
-| `SIAMESE_DEVICE` | `auto` | `cuda` / `cpu` / `auto` |
-| `SIG_SIMILARITY_THRESHOLD` | `0.85` | Cosine similarity threshold |
-| `SIG_MULTI_REF_AGG` | `mean` | `mean` / `max` / `min` |
-| `SIG_MIN_VARIANCE_RATIO` | `0.001` | Blank-region rejection threshold |
-| `SIG_VLM_VALIDATION` | `0` | `1` to enable VLM signature validation |
+Always `cd dgx_spark_gb10` first so imports resolve. Example assets use **`../test_data`**.
 
----
+## Environment variables
 
-## Pipeline stages in detail
+| Variable | Purpose |
+|----------|---------|
+| `GEMMA_HF_MODEL_ID` | Override Gemma model id (default `google/gemma-4-E4B-it`). |
+| `FALCON_HF_MODEL_ID` | Override Falcon checkpoint (default `tiiuae/Falcon-Perception`). |
+| `FALCON_HF_REVISION` | Falcon revision on the Hub. |
+| `FALCON_HF_LOCAL_DIR` | Load Falcon from a local directory instead of the Hub. |
+| `CUDA_DEVICE` | Device string for Falcon, e.g. `cuda:0` (optional). |
+| `FALCON_TORCH_COMPILE` | `1` to enable `torch.compile` for Falcon (slower cold start, faster steady state). Default: disabled. |
+| `FALCON_TORCH_DTYPE` | `bfloat16` (default), `float32`, or `float`. |
+| `GEMMA_DO_SAMPLE` | `0` for greedy Gemma decoding; default uses sampling with temperature 0.1 like the MLX path. |
 
-### Stage 1 — ChequeAnalyzer (`stages/cheque_analyzer.py`)
+## Verification (smoke test)
 
-1. Calls `run_gemma_reasoning(image, prompt)` from the Visual Agent with a
-   structured JSON prompt requesting all cheque fields **and** the signature
-   bounding box.
-2. Parses the JSON response via a robust multi-strategy extractor.
-3. If the VLM does not return a valid bounding box, falls back to
-   `run_falcon_perception(image, "handwritten signature")` to detect the
-   signature region.
-4. Returns a `ChequeData` object with all fields populated.
+With dependencies installed:
 
-> **No Visual Agent code is modified.**  The stage only calls the two public
-> functions (`run_gemma_reasoning`, `run_falcon_perception`) exposed by
-> `agent_studio.py` from the `dgx_spark_gb10/` directory.
-
-### Stage 2 — SignatureVerifier (`stages/signature_verifier.py`)
-
-1. Loads `siddharth-magesh/siamese-signature-verification` from HuggingFace.
-   Three loader strategies are tried in order:
-   - `transformers.AutoModel.from_pretrained`
-   - Plain `torch.load` of `model.safetensors` / `pytorch_model.bin`
-   - Fallback to a built-in `_SiameseCNN` backbone (architecture mirrors
-     common signature verification networks)
-2. Computes L2-normalised embedding vectors for the query and all reference
-   signatures via `embed()`.
-3. Computes cosine similarities and aggregates (mean/max/min).
-4. Applies the configurable threshold to produce a `"genuine"` / `"forged"`
-   / `"undetermined"` verdict with a confidence score.
-
-### Signature validation (`utils/image_utils.py`)
-
-Before the Siamese comparison the cropped region is validated with three
-lightweight checks:
-
-| Check | What it catches |
-|---|---|
-| Pixel variance | Blank / near-uniform regions |
-| Dark-ink ratio | Empty or fully black images |
-| Morphological erosion | Noise / very thin disconnected pixels |
-
-An optional fourth check (`--vlm-validate`) uses the VLM to confirm the crop
-contains a handwritten signature.
-
----
-
-## Tuning the similarity threshold
-
-The default threshold of **0.85** is a conservative starting point.  To tune
-it on your own labelled dataset:
-
-```python
-from stages.signature_verifier import SignatureVerifier
-from config import SiameseConfig, VerificationConfig
-
-verifier = SignatureVerifier(SiameseConfig(), VerificationConfig())
-
-# Build embeddings for all genuine and forged pairs
-# genuine_scores = [verifier.verify(q, refs)["similarity_score"] for q, refs in genuine_pairs]
-# forged_scores  = [verifier.verify(q, refs)["similarity_score"] for q, refs in forged_pairs]
-
-# Choose the threshold that maximises F1 or minimises EER on your validation set.
+```bash
+cd dgx_spark_gb10
+python3 -m py_compile agent_studio.py app.py video_tracker.py demo.py agent.py main.py vision_studio.py
+python3 -c "import agent_studio, app, video_tracker, demo, agent, main, vision_studio"
 ```
 
----
+Start the main UI and check the server responds:
 
-## Extending the pipeline
+```bash
+python vision_studio.py
+# In another shell:
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:7860/
+curl -sS http://127.0.0.1:7860/api/examples | python3 -m json.tool | head
+```
 
-- **Custom backbone** — subclass `torch.nn.Module`, implement `forward(x) → embedding`, and pass an instance to `SignatureVerifier._model`.
-- **Different VLM** — swap the model ID in `VisualAgentConfig.gemma_model_id`.
-- **REST API** — wrap `ChequeVerificationPipeline.run()` in a FastAPI endpoint; call `pipeline.warm_up()` in the `lifespan` startup hook.
+A full agent run loads Falcon + Gemma and requires GPU memory, HF auth for Gemma, and patience on the first Falcon compile.
+
+## Video Object Tracking
+
+The current `video_tracker.py` runs **Falcon Perception per-frame** with a greedy **IoU-based tracker** (`SimpleTracker`). This works for basic use cases but has limitations: per-frame detection is slow (~1-4s/frame), the IoU matcher has no motion model or appearance features, and each frame is treated independently with no temporal memory.
+
+Below are model options evaluated for upgrading the tracking pipeline on CUDA hardware.
+
+### Option 1: SAM 2 — Segment Anything Model 2 (recommended upgrade)
+
+Meta's foundation model for video object segmentation. Prompt it on the first frame (with a point, box, or mask from Falcon), and it **propagates segmentation across all subsequent frames** using a streaming memory mechanism — no per-frame detection needed.
+
+| Variant | Params | Use case |
+|---------|--------|----------|
+| `sam2.1-hiera-tiny` | 39M | Fastest, lightweight |
+| `sam2.1-hiera-small` | 46M | Good balance |
+| `sam2.1-hiera-base+` | 81M | Higher quality |
+| `sam2.1-hiera-large` | 224M | Best quality |
+
+- **Architecture:** Falcon detects on frame 1 → SAM 2 tracks masks across all frames → re-detect periodically for new objects
+- **Advantage:** Eliminates per-frame detection; temporal consistency built in; supports `torch.compile` with `vos_optimized=True`
+- **Repo:** [facebookresearch/sam2](https://github.com/facebookresearch/sam2) (Apache 2.0)
+
+### Option 2: Grounded SAM 2 (Grounding DINO + SAM 2)
+
+Combines an open-vocabulary text-prompted detector (Grounding DINO 1.5/1.6 or Florence-2) with SAM 2 for detect + segment + track in one pipeline. Natural language prompts like the current system.
+
+- **Advantage:** Text-prompted detection + SAM 2 tracking in a single pipeline; continuous ID tracking built in
+- **Trade-off:** Adds Grounding DINO as a dependency; if keeping Falcon as detector, plain SAM 2 (Option 1) is cleaner
+- **Repo:** [IDEA-Research/Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)
+
+### Option 3: ByteTrack / BoT-SORT (easiest drop-in)
+
+Production-grade multi-object tracking algorithms that work with **any detector**. Replace `SimpleTracker` with proper Kalman filtering, Hungarian matching, and appearance features.
+
+- **ByteTrack:** Two-stage association (high + low confidence detections) handles occlusion well; 60.1 HOTA on MOT17
+- **BoT-SORT:** Adds camera-motion compensation and appearance re-ID; 65.0 HOTA on MOT17
+- **Install:** `pip install trackers` (Roboflow `trackers` v2.3.0, Apache 2.0)
+- **Trade-off:** Still requires per-frame detection, so speed is limited by Falcon's inference time; but tracking quality improves significantly
+
+### Option 4: CoTracker3 (dense point tracking)
+
+Meta's transformer-based model that tracks **dense points** (up to 70k) jointly across video. Tracks motion trajectories rather than object bounding boxes.
+
+- **Use case:** Motion analysis, object deformation, fine-grained trajectory tracking
+- **Trade-off:** Tracks points, not objects — needs separate object-to-point association; best as an add-on, not a replacement
+- **Repo:** [facebookresearch/co-tracker](https://github.com/facebookresearch/co-tracker)
+
+### Option 5: YOLO-World (fast open-vocabulary detection)
+
+Real-time open-vocabulary detector (~52 FPS on V100) that understands text prompts. Could serve as the fast per-frame detector for video while keeping Falcon for high-quality single-image analysis.
+
+- **Performance:** 35.4 AP on LVIS at 52 FPS
+- **Trade-off:** Bounding boxes only (no segmentation); needs SAM 2 on top for masks
+- **Repo:** [AILab-CVC/YOLO-World](https://github.com/AILAB-CVC/YOLO-World)
+
+### Recommended combinations
+
+| Goal | Approach | Speed | Quality |
+|------|----------|-------|---------|
+| Best quality with existing models | Falcon (frame 1) + **SAM 2** (propagate) | Fast (detect once) | Excellent |
+| Best quality, fully text-prompted | **Grounded SAM 2** | Fast | Excellent |
+| Quickest upgrade, minimal changes | Falcon + **ByteTrack/BoT-SORT** | Same as current | Much better ID consistency |
+| Real-time capable | **YOLO-World** + ByteTrack + SAM 2 | ~30+ FPS detect | Good |
+| Motion analysis add-on | Any above + **CoTracker3** | Real-time points | Dense trajectories |
+
+## Notes
+
+- **First Falcon run** can take noticeable time while PyTorch compiles and (if enabled) captures CUDA graphs; this is expected on upstream Falcon Perception.
+- **VRAM**: Gemma 4 E4B-it plus Falcon is sized for a workstation GPU; reduce batch usage or use a smaller Gemma id via `GEMMA_HF_MODEL_ID` if you hit OOM.
+- **`demo.py` video tab** re-encodes with **H.264** via `ffmpeg` when `ffmpeg` is on `PATH` (the macOS-only `/opt/homebrew/bin/ffmpeg` path is not used here).
